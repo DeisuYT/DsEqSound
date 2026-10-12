@@ -153,10 +153,10 @@ index 0000000..cbb06ab
 +основы сохраняются. Полный текст лицензии приложен.
 diff --git a/Deisu/tests/CMakeLists.txt b/Deisu/tests/CMakeLists.txt
 new file mode 100644
-index 0000000..02001df
+index 0000000..5c3133e
 --- /dev/null
 +++ b/Deisu/tests/CMakeLists.txt
-@@ -0,0 +1,19 @@
+@@ -0,0 +1,20 @@
 +cmake_minimum_required(VERSION 3.16)
 +project(DeisuTests LANGUAGES CXX)
 +set(CMAKE_CXX_STANDARD 17)
@@ -171,6 +171,7 @@ index 0000000..02001df
 +add_executable(DeisuTransportTests transport.cpp)
 +target_include_directories(DeisuTransportTests PRIVATE ../..)
 +if(MSVC)
++  target_compile_options(DeisuBackupTests PRIVATE /utf-8)
 +  target_compile_options(DeisuTransportTests PRIVATE /UNDEBUG)
 +else()
 +  target_compile_options(DeisuTransportTests PRIVATE -UNDEBUG)
@@ -178,10 +179,10 @@ index 0000000..02001df
 +add_test(NAME transport COMMAND DeisuTransportTests)
 diff --git a/Deisu/tests/backup.cpp b/Deisu/tests/backup.cpp
 new file mode 100644
-index 0000000..a18cfdb
+index 0000000..76f127f
 --- /dev/null
 +++ b/Deisu/tests/backup.cpp
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,53 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +#include "Editor/helpers/ConfigBackup.h"
 +#include <QCoreApplication>
@@ -227,8 +228,10 @@ index 0000000..a18cfdb
 +    check(!QDir(temp.path()+"/corrupt").exists(),"corruption rollback");
 +    write(archive,original.left(original.size()-1));check(!ConfigBackup::restore(archive,temp.path()+"/truncated",error),"truncated payload");
 +    write(archive,original+"x");check(!ConfigBackup::restore(archive,temp.path()+"/trailing",error),"trailing payload");
++#ifndef _WIN32
 +    write(archive,original);write(root+"/CON.txt","bad");
 +    check(!ConfigBackup::create(root,archive,{},error),"bad source name");check(read(archive)==original,"preserve previous backup on failure");
++#endif
 +    std::cout<<"PASS backup: binary/unicode roundtrip, open snapshots, corruption, traversal, truncation, atomic restore and existing archive protection\n";
 +    return 0;
 + } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
