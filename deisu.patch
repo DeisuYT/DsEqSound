@@ -1,0 +1,941 @@
+diff --git a/.github/workflows/deisu-validation.yml b/.github/workflows/deisu-validation.yml
+new file mode 100644
+index 0000000..5d7741f
+--- /dev/null
++++ b/.github/workflows/deisu-validation.yml
+@@ -0,0 +1,39 @@
++name: DEISU Windows build and contracts
++on:
++  workflow_dispatch:
++permissions:
++  contents: read
++jobs:
++  windows:
++    runs-on: windows-2022
++    timeout-minutes: 90
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - name: Build Windows installer (does not install)
++        shell: powershell
++        run: ./build.ps1 -VisualStudioEdition Enterprise
++      - name: Build and run DEISU contracts
++        shell: powershell
++        run: |
++          cmake -S Deisu/tests -B _build/deisu-tests -A x64 -DCMAKE_PREFIX_PATH="$pwd/third_party/Qt/6.10.1/msvc2022_64"
++          if ($LASTEXITCODE) { exit $LASTEXITCODE }
++          cmake --build _build/deisu-tests --config Release
++          if ($LASTEXITCODE) { exit $LASTEXITCODE }
++          $env:PATH="$pwd/third_party/Qt/6.10.1/msvc2022_64/bin;"+$env:PATH
++          ctest --test-dir _build/deisu-tests -C Release --output-on-failure
++          if ($LASTEXITCODE) { exit $LASTEXITCODE }
++      - name: Upstream core fixture contracts
++        shell: powershell
++        run: ./SmokeTests/run-smoke.ps1 -Suite Core -SmokeSeconds 10
++      - uses: actions/upload-artifact@v4
++        if: always()
++        with:
++          name: DEISU-build-and-logs
++          path: |
++            output/installer/*.exe
++            output/build/**
++            output/smoke/**
++            _build/deisu-tests/Testing/**
+diff --git a/Deisu/README-RU.md b/Deisu/README-RU.md
+new file mode 100644
+index 0000000..cbb06ab
+--- /dev/null
++++ b/Deisu/README-RU.md
+@@ -0,0 +1,102 @@
++# DEISU Audio — экспериментальные доработки Equalizer APO
++
++Это исходники доработок, НЕ готовый проверенный Windows EXE. Полная сборка Windows,
++совместимость конкретных VST и работа реального аудиоустройства пока не проверены.
++
++Основа: https://github.com/Mixomo/EqAPO64_with_VST3_support
++Ветка: v3-rewrite. Зафиксированный commit: b9cf3f39d070aaa5db515b37c1771c61a77c168c.
++VST3, изолированный процесс плагинов, нативные живые панели и VU — работа авторов
++основы. Доработки DEISU: интерфейс, профили буфера, бекап и тесты.
++
++## Что реализовано
++
++1. **VST3**: используется хост основы вместе с сохранённой поддержкой VST2.
++   В новой боковой панели есть кнопка добавления эффекта. Выбор .vst3 — в строке эффекта.
++2. **Живая визуализация**: Open panel открывает нативное окно через механизм основы.
++   Это дисплей плагина, связанный с обработкой звука; поддержка зависит от плагина.
++   Кнопка Live level meter добавляет настоящий VU-индикатор, а не анимацию-макет.
++   Добавьте индикаторы до/после эффекта, чтобы видеть изменение уровня.
++   Нижний Analyzer исходного редактора — анализ характеристики, не живой спектр.
++3. **Задержка**: Audio buffer в каждом VST выбирает квант 2/5/10/20 мс.
++   Старое поведение 10 мс сохранено по умолчанию. Выбор записывается в конфигурацию
++   как TransportMs, включается в идентификатор совместимости сессии и применяется
++   при подготовке нового графа вне аудиоколбэка.
++4. **Интерфейс**: нативная тёмная рабочая панель с синими акцентами, быстрыми
++   действиями и существующей цепочкой эффектов. Это первый вариант, а не точная
++   копия Wave Link. Переключатель возвращает обычное оформление.
++5. **Один бекап**: Save backup создаёт .eqbackup с файлами папки config,
++   включая сохранённые там состояния плагинов. Открытые конфигурации добавляются
++   с текущими правками после запроса актуального состояния у плагинов.
++   Исходные файлы при этом не перезаписываются.
++   Restore backup проверяет размеры, пути и SHA-256, затем восстанавливает копию
++   в НОВУЮ папку. Рабочая конфигурация автоматически не заменяется.
++
++## Важные границы
++
++- Итоговая задержка = задержки Windows/драйвера + транспорт каждого VST + задержки эффектов.
++  Транспорт основы использует два кванта на каждый последовательный VST.
++  При частоте 48 кГц и callback <=96 сэмплов профиль 2 мс даёт 192 сэмпла (4 мс)
++  транспортной задержки на VST, тогда как стандартный — 960 сэмплов (20 мс).
++  Это расчёт по коду, НЕ замер микрофон→наушники. При callback 480 сэмплов
++  нижняя граница остаётся 20 мс даже с профилем 2 мс.
++- Более короткий квант повышает требования к планировщику и процессору. При
++  треске/пропусках верните 5/10/20 мс. Нулевая задержка не обещается.
++- Лицензии, установленный софт плагинов, их внешние библиотеки и файлы вне config
++  не копируются. Для переносимого набора поместите Include/IR/пресеты в config
++  и используйте относительные пути. Их автоматическое обнаружение не реализовано.
++- Бекап не включает привязку APO к устройствам, драйверы, реестр Windows и настройки
++  оформления редактора. Бекап не зашифрован. Для переноса на другой компьютер
++  нужно установить плагины и активировать их обычным способом.
++- Пределы бекапа: 256 МиБ на файл, 2 ГиБ суммарно, 10 000 файлов. Символические
++  ссылки отвергаются; архивы .eqbackup внутри config пропускаются.
++- ASIO/эксклюзивные потоки, обходящие APO, не обрабатываются. Не каждый VST
++  поддерживает этот хост. Внешние sidechain и полноценный транспорт DAW отсутствуют.
++
++## Проверено в этой среде
++
++- Бекап: C++/Qt 5.15.13, Linux. Двоичные файлы, русские имена, текущие правки,
++  восстановление, повреждение, усечение, лишние байты, небезопасные пути,
++  отказ от перезаписи существующей папки и сохранность старого архива при ошибке.
++- Аудио: C++17, Linux, симуляция существующего AsyncAudioClient, 192 сочетания
++  частоты/каналов/профиля/колбэка/задержки плагина. Проверены точное выравнивание
++  сэмплов, потеря/восстановление хоста и отсутствие выделений памяти в callback.
++- Это НЕ проверка реального IPC Windows, audiodg, графических окон VST или драйверов.
++- Полная сборка приложения и скрипт сборки ещё требуют запуска на Windows.
++
++## Сборка в Windows 10/11 x64
++
++Нужны Git, Python 3, CMake, Visual Studio 2022 (Desktop development with C++ и
++Windows SDK); основа использует AVX2. Интернет нужен для получения основы и,
++при необходимости, недостающих зависимостей. Загружается большой репозиторий.
++
++В архиве доработок запустите Build-DEISU.cmd. Скрипт:
++- создаёт новую папку source;
++- получает ТОЧНО указанный commit;
++- проверяет и применяет deisu.patch;
++- запускает штатную сборку основы;
++- не устанавливает APO и не меняет ваши аудиоустройства.
++
++Если Visual Studio Enterprise/Professional, вместо .cmd:
++
++```powershell
++powershell -NoProfile -ExecutionPolicy Bypass -File .\Build-DEISU.ps1 -VisualStudioEdition Enterprise
++```
++
++Готовый результат сборки: source/output/installer/*.exe. Сам факт сборки не
++подтверждает аудиосовместимость. Перед использованием на основной системе нужны
++проверки на тестовой Windows-машине и копия существующей конфигурации.
++
++При наличии собственной копии репозитория можно применить deisu.patch на
++указанный commit и выполнить build.ps1. Workflow .github/workflows/deisu-validation.yml
++позволяет вручную запустить сборку и fixture-тесты в GitHub; он здесь не запускался.
++
++## Проверки на Windows перед обычным использованием
++
++Запустить SmokeTests/run-smoke.ps1 -Suite All -WithFixtureGui; дополнительно проверить
++ваши конкретные VST: живые индикаторы при звуке, затухание при тишине, сохранение
++параметров, повторное открытие, bypass, восстановление после падения, 30 минут
++работы под нагрузкой. Измерить loopback-задержку с одинаковыми настройками
++Windows до/после, отдельно для 2/5/10/20 мс и для всей цепочки.
++
++Лицензия добавленных файлов: GPL-3.0-or-later. Существующие уведомления и лицензии
++основы сохраняются. Полный текст лицензии приложен.
+diff --git a/Deisu/tests/CMakeLists.txt b/Deisu/tests/CMakeLists.txt
+new file mode 100644
+index 0000000..02001df
+--- /dev/null
++++ b/Deisu/tests/CMakeLists.txt
+@@ -0,0 +1,19 @@
++cmake_minimum_required(VERSION 3.16)
++project(DeisuTests LANGUAGES CXX)
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++enable_testing()
++find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Core)
++find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Core)
++add_executable(DeisuBackupTests backup.cpp ../../Editor/helpers/ConfigBackup.cpp)
++target_include_directories(DeisuBackupTests PRIVATE ../..)
++target_link_libraries(DeisuBackupTests PRIVATE Qt${QT_VERSION_MAJOR}::Core)
++add_test(NAME backup COMMAND DeisuBackupTests)
++add_executable(DeisuTransportTests transport.cpp)
++target_include_directories(DeisuTransportTests PRIVATE ../..)
++if(MSVC)
++  target_compile_options(DeisuTransportTests PRIVATE /UNDEBUG)
++else()
++  target_compile_options(DeisuTransportTests PRIVATE -UNDEBUG)
++endif()
++add_test(NAME transport COMMAND DeisuTransportTests)
+diff --git a/Deisu/tests/backup.cpp b/Deisu/tests/backup.cpp
+new file mode 100644
+index 0000000..a18cfdb
+--- /dev/null
++++ b/Deisu/tests/backup.cpp
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "Editor/helpers/ConfigBackup.h"
++#include <QCoreApplication>
++#include <QTemporaryDir>
++#include <QDir>
++#include <QFile>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QJsonArray>
++#include <QtEndian>
++#include <stdexcept>
++#include <iostream>
++static void check(bool ok,const char* message) {if(!ok)throw std::runtime_error(message);}
++static void write(const QString& path,const QByteArray& bytes) {QFile f(path);check(f.open(QIODevice::WriteOnly),"open fixture");check(f.write(bytes)==bytes.size(),"write fixture");}
++static QByteArray read(const QString& path) {QFile f(path);check(f.open(QIODevice::ReadOnly),"read fixture");return f.readAll();}
++static QByteArray changedPath(QByteArray bytes,const QString& path) {
++    auto count=qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(bytes.constData()+9));
++    auto object=QJsonDocument::fromJson(bytes.mid(13,count)).object();auto array=object["files"].toArray();
++    auto item=array[0].toObject();item["path"]=path;array[0]=item;object["files"]=array;
++    auto header=QJsonDocument(object).toJson(QJsonDocument::Compact);uchar size[4];qToBigEndian<quint32>(header.size(),size);
++    return bytes.left(9)+QByteArray(reinterpret_cast<char*>(size),4)+header+bytes.mid(13+count);
++}
++int main(int argc,char** argv) {
++ QCoreApplication app(argc,argv);
++ try {
++    QTemporaryDir temp;check(temp.isValid(),"temp");const auto root=temp.path()+"/config";QDir().mkpath(root+"/пресеты");
++    write(root+"/config.txt","Preamp: -3 dB\n");write(root+"/пресеты/state.bin",QByteArray("\0\xfftest",6));
++    QString error;const auto archive=temp.path()+"/test.eqbackup";
++    check(ConfigBackup::create(root,archive,{{"config.txt","Preamp: -6 dB\r\n"}},error),qPrintable(error));
++    const auto original=read(archive);const auto restored=temp.path()+"/restored";
++    check(ConfigBackup::restore(archive,restored,error),qPrintable(error));
++    check(read(restored+"/config.txt")=="Preamp: -6 dB\r\n","open-buffer snapshot");
++    check(read(restored+"/пресеты/state.bin")==read(root+"/пресеты/state.bin"),"binary/unicode round trip");
++    check(!ConfigBackup::restore(archive,restored,error),"existing destination must remain intact");
++    check(!ConfigBackup::create(root,root+"/recursive.eqbackup",{},error),"reject archive inside tree");
++    for(const auto& path:QStringList{"../escape","/absolute","C:/escape","foo\\bar","NUL.txt","a/../b","file:stream","x.","x "}) {
++        write(archive,changedPath(original,path));
++        check(!ConfigBackup::restore(archive,temp.path()+"/unsafe",error),"unsafe path rejected");
++        check(!QDir(temp.path()+"/unsafe").exists(),"no partial publication");
++    }
++    auto corrupt=original;corrupt[corrupt.size()-1]=char(corrupt.at(corrupt.size()-1)^1);write(archive,corrupt);
++    check(!ConfigBackup::restore(archive,temp.path()+"/corrupt",error),"checksum rejection");
++    check(!QDir(temp.path()+"/corrupt").exists(),"corruption rollback");
++    write(archive,original.left(original.size()-1));check(!ConfigBackup::restore(archive,temp.path()+"/truncated",error),"truncated payload");
++    write(archive,original+"x");check(!ConfigBackup::restore(archive,temp.path()+"/trailing",error),"trailing payload");
++    write(archive,original);write(root+"/CON.txt","bad");
++    check(!ConfigBackup::create(root,archive,{},error),"bad source name");check(read(archive)==original,"preserve previous backup on failure");
++    std::cout<<"PASS backup: binary/unicode roundtrip, open snapshots, corruption, traversal, truncation, atomic restore and existing archive protection\n";
++    return 0;
++ } catch(const std::exception& e) {std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
++}
+diff --git a/Deisu/tests/tests.pro b/Deisu/tests/tests.pro
+new file mode 100644
+index 0000000..de728be
+--- /dev/null
++++ b/Deisu/tests/tests.pro
+@@ -0,0 +1,9 @@
++QT += core
++QT -= gui
++CONFIG += console c++17
++CONFIG -= app_bundle
++TEMPLATE = app
++TARGET = DeisuBackupTests
++INCLUDEPATH += ../..
++SOURCES += backup.cpp ../../Editor/helpers/ConfigBackup.cpp
++HEADERS += ../../Editor/helpers/ConfigBackup.h
+diff --git a/Deisu/tests/transport.cpp b/Deisu/tests/transport.cpp
+new file mode 100644
+index 0000000..125eda6
+--- /dev/null
++++ b/Deisu/tests/transport.cpp
+@@ -0,0 +1,35 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "outproc/TransportProfile.h"
++#include <cassert>
++#include <limits>
++#include <iostream>
++// Exercise upstream timeline implementation too, with a portable allocator shim.
++#ifndef _WIN32
++#include <cstdlib>
++static void* _aligned_malloc(std::size_t n,std::size_t a) {void* p=nullptr;return posix_memalign(&p,a,n)==0?p:nullptr;}
++static void _aligned_free(void* p) {std::free(p);}
++#endif
++#define main upstreamContractsMain
++#include "SmokeTests/engine/realtime_tests.cpp"
++#undef main
++int main() {
++    using namespace EqApoTransport;
++    assert(parse(L"2")==2 && parse(L"5")==5 && parse(L"20")==20);
++    for(const auto* s:{L"",L"0",L"-1",L"NaN",L"2junk",L"9999999999"})assert(parse(s)==10);
++    assert(quantum(48000,64,2)==96);
++    assert(quantum(44100,64,2)==89);
++    assert(quantum(48000,480,2)==480); // callback lower bound
++    assert(quantum(48000,64,0)==480); // fallback
++    assert(quantum(std::numeric_limits<double>::quiet_NaN(),64,2)==64);
++    try {
++        testGraphAlignment();
++        for(unsigned rate:{44100u,48000u,96000u})
++            for(unsigned channels:{1u,2u,6u,8u})
++                for(unsigned ms:{2u,5u,10u,20u})
++                    for(unsigned callback:{64u,480u})
++                        for(unsigned pluginDelay:{0u,257u})
++                            testTimeline(channels,rate,quantum(rate,callback,ms),pluginDelay);
++        std::cout<<"PASS profiles: 96 transport layouts x 2 plugin delays; no callback allocations\n";
++        return 0;
++    } catch(const std::exception& e) {watch=false;std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}
++}
+diff --git a/Editor/Editor.pro b/Editor/Editor.pro
+index 384e2af..51159c3 100644
+--- a/Editor/Editor.pro
++++ b/Editor/Editor.pro
+@@ -412,3 +412,7 @@ RC_FILE = Editor.rc
+ 
+ DISTFILES += ../uncrustify.cfg
+ 
++
++# DEISU native workspace and configuration archives
++SOURCES += StudioWorkspace.cpp helpers/ConfigBackup.cpp
++HEADERS += helpers/ConfigBackup.h helpers/StudioStyle.h ../outproc/TransportProfile.h
+diff --git a/Editor/MainWindow.cpp b/Editor/MainWindow.cpp
+index ff6a0f2..c1e57cf 100644
+--- a/Editor/MainWindow.cpp
++++ b/Editor/MainWindow.cpp
+@@ -193,6 +193,7 @@ MainWindow::MainWindow(QDir configDir, QWidget* parent)
+ 	}
+ 
+ 	loadPreferences();
++    setupStudioWorkspace();
+ }
+ 
+ MainWindow::~MainWindow()
+diff --git a/Editor/MainWindow.h b/Editor/MainWindow.h
+index 6943b63..8ecb7c3 100644
+--- a/Editor/MainWindow.h
++++ b/Editor/MainWindow.h
+@@ -92,6 +92,10 @@ private slots:
+ 	void on_actionResetAllFileSpecificPreferences_triggered();
+ 
+ private:
++    FilterTable* currentFilterTable() const;
++    void setupStudioWorkspace();
++    void saveStudioBackup();
++    void restoreStudioBackup();
+ 	FilterTable* addTab(QString title, QString tooltip, QString configPath, QList<QString> lines);
+ 	void getDeviceAndChannelMask(std::shared_ptr<AbstractAPOInfo>* selectedDevice, int* channelMask);
+ 	bool askForClose(int tabIndex);
+diff --git a/Editor/StudioWorkspace.cpp b/Editor/StudioWorkspace.cpp
+new file mode 100644
+index 0000000..1f643a4
+--- /dev/null
++++ b/Editor/StudioWorkspace.cpp
+@@ -0,0 +1,108 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "MainWindow.h"
++#include "ui_MainWindow.h"
++#include "helpers/ConfigBackup.h"
++#include "helpers/StudioStyle.h"
++#include <QCheckBox>
++#include <QDateTime>
++#include <QDockWidget>
++#include <QFileDialog>
++#include <QGroupBox>
++#include <QLabel>
++#include <QMessageBox>
++#include <QPushButton>
++#include <QScrollArea>
++#include <QSettings>
++#include <QStatusBar>
++#include <QUuid>
++#include <QVBoxLayout>
++
++FilterTable* MainWindow::currentFilterTable() const {
++    auto* scroll=qobject_cast<QScrollArea*>(ui->tabWidget->currentWidget());
++    return scroll?qobject_cast<FilterTable*>(scroll->widget()):nullptr;
++}
++
++void MainWindow::setupStudioWorkspace() {
++    setWindowTitle(QStringLiteral("DEISU Audio — Equalizer APO"));
++    auto* dock=new QDockWidget(tr("Audio workspace"),this);
++    dock->setObjectName("deisuStudioDock");
++    dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
++    auto* panel=new QWidget(dock);panel->setObjectName("studioSidebar");
++    panel->setMinimumWidth(230);panel->setMaximumWidth(310);
++    auto* layout=new QVBoxLayout(panel);layout->setContentsMargins(18,22,18,18);layout->setSpacing(12);
++    auto* brand=new QLabel(QStringLiteral("DEISU AUDIO"),panel);brand->setObjectName("studioBrand");layout->addWidget(brand);
++    auto* subtitle=new QLabel(tr("Effects • Live panels • Backups"),panel);subtitle->setObjectName("studioSubtitle");subtitle->setWordWrap(true);layout->addWidget(subtitle);
++    auto* title=new QLabel(tr("Editing device"),panel);layout->addWidget(title);
++    auto* device=new QLabel(deviceComboBox->currentText(),panel);device->setWordWrap(true);layout->addWidget(device);
++    connect(deviceComboBox,&QComboBox::currentTextChanged,device,&QLabel::setText);
++    auto* hint=new QLabel(tr("The selector previews a device. Use a Device filter to restrict where a chain runs."),panel);hint->setWordWrap(true);layout->addWidget(hint);
++    auto addButton=[&](const QString& name,const QString& line) {
++        auto* button=new QPushButton(name,panel);layout->addWidget(button);
++        connect(button,&QPushButton::clicked,this,[this,line]() {
++            auto* table=currentFilterTable();
++            if(!table) {on_actionNew_triggered();table=currentFilterTable();}
++            if(!table)return;
++            table->addLine(line.contains("%1") ? line.arg(QUuid::createUuid().toString(QUuid::WithoutBraces)) : line);
++            table->updateGuis();
++        });
++        return button;
++    };
++    addButton(tr("+ VST2 / VST3 effect"),QStringLiteral("VSTPlugin:"))->setObjectName("studioPrimary");
++    addButton(tr("+ Live level meter"),QStringLiteral("VUMeter: MeterId %1 Channels all RMS \"AES17\" LUFS \"ITU-R BS.1770-5\""));
++    addButton(tr("+ Gain control"),QStringLiteral("Preamp: 0 dB"));
++    auto* liveHelp=new QLabel(tr("Open panel on an effect to see its live display. Add meters before and after effects to compare levels. Save the active chain to apply it."),panel);
++    liveHelp->setWordWrap(true);layout->addWidget(liveHelp);
++    auto* latencyHelp=new QLabel(tr("Each VST has an Audio buffer selector. Smaller buffers can reduce transport delay; larger buffers tolerate heavier effects. This is not an end-to-end latency measurement."),panel);
++    latencyHelp->setWordWrap(true);layout->addWidget(latencyHelp);
++    layout->addStretch();
++    auto* saveButton=new QPushButton(tr("Save backup…"),panel);layout->addWidget(saveButton);
++    connect(saveButton,&QPushButton::clicked,this,&MainWindow::saveStudioBackup);
++    auto* restoreButton=new QPushButton(tr("Restore backup…"),panel);layout->addWidget(restoreButton);
++    connect(restoreButton,&QPushButton::clicked,this,&MainWindow::restoreStudioBackup);
++    auto* backupHelp=new QLabel(tr("One file: configuration folder and plug-in states stored there. External files, installed plug-ins and licenses are not included."),panel);
++    backupHelp->setWordWrap(true);layout->addWidget(backupHelp);
++    auto* theme=new QCheckBox(tr("Dark workspace"),panel);layout->addWidget(theme);
++    QSettings settings("DEISU","Audio");theme->setChecked(settings.value("dark",true).toBool());
++    auto applyTheme=[this](bool dark) {setStyleSheet(dark?deisuStudioStyle():QString());QSettings("DEISU","Audio").setValue("dark",dark);};
++    applyTheme(theme->isChecked());connect(theme,&QCheckBox::toggled,this,applyTheme);
++    dock->setWidget(panel);addDockWidget(Qt::LeftDockWidgetArea,dock);
++    resize(1280,820);
++}
++
++void MainWindow::saveStudioBackup() {
++    QMap<QString,QByteArray> overrides;
++    for(int i=0;i<ui->tabWidget->count();++i) {
++        auto* scroll=qobject_cast<QScrollArea*>(ui->tabWidget->widget(i));
++        auto* table=scroll?qobject_cast<FilterTable*>(scroll->widget()):nullptr;
++        if(!table)continue;
++        if(!table->flushPendingEdits()) {
++            QMessageBox::warning(this,tr("Backup"),tr("A plug-in has not supplied its current state. Close its panel and try again."));return;
++        }
++        const QString path=table->getConfigPath();
++        const QString relative=configDir.relativeFilePath(path);
++        if(path.isEmpty() || QDir::isAbsolutePath(relative) || relative==".." || relative.startsWith("../")) {
++            QMessageBox::warning(this,tr("Backup"),tr("Save all open configurations inside the configuration folder first:\n%1").arg(configDir.absolutePath()));return;
++        }
++        QStringList lines;
++        for(const auto& line:table->getLines())lines.append(line);
++        overrides.insert(relative,(lines.join("\r\n")+"\r\n").toUtf8());
++    }
++    const QString suggested=QDir::homePath()+"/DEISU-"+QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+".eqbackup";
++    QString target=QFileDialog::getSaveFileName(this,tr("Save configuration backup"),suggested,tr("DEISU backup (*.eqbackup)"));
++    if(target.isEmpty())return;
++    if(!target.endsWith(".eqbackup",Qt::CaseInsensitive))target+=".eqbackup";
++    QString error;
++    if(!ConfigBackup::create(configDir.absolutePath(),target,overrides,error))QMessageBox::warning(this,tr("Backup failed"),error);
++    else QMessageBox::information(this,tr("Backup saved"),tr("Saved to:\n%1\n\nExternal files, plug-in binaries and licenses are not included.").arg(target));
++}
++
++void MainWindow::restoreStudioBackup() {
++    const QString archive=QFileDialog::getOpenFileName(this,tr("Open backup"),QDir::homePath(),tr("DEISU backup (*.eqbackup)"));
++    if(archive.isEmpty())return;
++    const QString parent=QFileDialog::getExistingDirectory(this,tr("Choose a parent folder for the restored copy"),QDir::homePath());
++    if(parent.isEmpty())return;
++    const QString target=parent+"/DEISU-restored-"+QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss")+"-"+QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
++    QString error;
++    if(!ConfigBackup::restore(archive,target,error))QMessageBox::warning(this,tr("Restore failed"),error);
++    else QMessageBox::information(this,tr("Backup restored"),tr("Restored to:\n%1\n\nYour running configuration was not overwritten. To activate, copy the restored files into your configuration folder. External dependencies must still be present at their original paths.").arg(target));
++}
+diff --git a/Editor/guis/VSTPluginFilterGUI.cpp b/Editor/guis/VSTPluginFilterGUI.cpp
+index caac3f2..10a2ee2 100644
+--- a/Editor/guis/VSTPluginFilterGUI.cpp
++++ b/Editor/guis/VSTPluginFilterGUI.cpp
+@@ -19,6 +19,8 @@
+ */
+ 
+ #include <QFileInfo>
++#include <QComboBox>
++#include "outproc/TransportProfile.h"
+ #include <QJsonDocument>
+ #include <QJsonArray>
+ #include <QJsonObject>
+@@ -72,10 +74,26 @@ static void appendOutProcDebugLog(const QString& message)
+ 	}
+ }
+ 
+-VSTPluginFilterGUI::VSTPluginFilterGUI(std::shared_ptr<VSTPluginLibrary> library, const std::wstring& chunkData, const std::unordered_map<std::wstring, float>& paramMap, const QString& hostId, int vst3ClassIndex,const std::wstring& classUID)
++VSTPluginFilterGUI::VSTPluginFilterGUI(std::shared_ptr<VSTPluginLibrary> library, const std::wstring& chunkData, const std::unordered_map<std::wstring, float>& paramMap, const QString& hostId, int vst3ClassIndex,const std::wstring& classUID, unsigned transportMs)
+ 	: ui(new Ui::VSTPluginFilterGUI), library(library), chunkData(chunkData), paramMap(paramMap), hostId(hostId), vst3ClassIndex(vst3ClassIndex),selectedClassUID(classUID)
+ {
+ 	ui->setupUi(this);
++    this->transportMs=EqApoTransport::normalize(transportMs);
++    if (auto* grid=qobject_cast<QGridLayout*>(layout())) {
++        auto* profile=new QComboBox(this);
++        profile->addItem(tr("Low latency — 2 ms quantum"),2);
++        profile->addItem(tr("Balanced — 5 ms quantum"),5);
++        profile->addItem(tr("Standard — 10 ms quantum"),10);
++        profile->addItem(tr("Stable — 20 ms quantum"),20);
++        profile->setCurrentIndex(profile->findData(this->transportMs));
++        profile->setToolTip(tr("Transport adds two quanta per plug-in, plus its own delay. The Windows callback size is a lower bound. Try a larger quantum if audio breaks up."));
++        grid->addWidget(new QLabel(tr("Audio buffer:"),this),5,0);
++        grid->addWidget(profile,5,1,1,4);
++        connect(profile,qOverload<int>(&QComboBox::currentIndexChanged),this,[this,profile](int) {
++            this->transportMs=profile->currentData().toUInt();
++            emit updateModel();
++        });
++    }
+     ui->pathLineEdit->setPathMode();
+ 	if (!EqApoControl::validSessionId(this->hostId.toStdWString()) || this->hostId=="GuiUserSID")
+ 	{
+@@ -138,7 +156,7 @@ void VSTPluginFilterGUI::store(QString& command, QString& parameters)
+ 
+ 	if (relativePath.contains(" "))
+ 		relativePath = "\"" + relativePath + "\"";
+-	parameters = "Library " + relativePath;
++	parameters = "Library " + relativePath + " TransportMs " + QString::number(transportMs);
+ 	if (library->isVST3()) {
+         const auto uid=selectedClassUID.empty()?library->getVST3ClassUID(vst3ClassIndex):selectedClassUID;
+         parameters += " ClassIndex " + QString::number(vst3ClassIndex);
+diff --git a/Editor/guis/VSTPluginFilterGUI.h b/Editor/guis/VSTPluginFilterGUI.h
+index 2591eeb..8f84ec2 100644
+--- a/Editor/guis/VSTPluginFilterGUI.h
++++ b/Editor/guis/VSTPluginFilterGUI.h
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+     This file is part of Equalizer APO, a system-wide equalizer.
+     Copyright (C) 2017  Jonas Thedering
+ 
+@@ -40,7 +40,7 @@ class VSTPluginFilterGUI : public IFilterGUI
+ public:
+     // Bypass affects audio, not the ability to hide/show/close the retained panel.
+     void setModuleBypassed(bool) override {setEnabled(true);}
+-	explicit VSTPluginFilterGUI(std::shared_ptr<VSTPluginLibrary> library, const std::wstring& chunkData, const std::unordered_map<std::wstring, float>& paramMap, const QString& hostId = QString(), int vst3ClassIndex = 0, const std::wstring& classUID = L"");
++	explicit VSTPluginFilterGUI(std::shared_ptr<VSTPluginLibrary> library, const std::wstring& chunkData, const std::unordered_map<std::wstring, float>& paramMap, const QString& hostId = QString(), int vst3ClassIndex = 0, const std::wstring& classUID = L"", unsigned transportMs = 10);
+ 	~VSTPluginFilterGUI();
+ 
+ 	void store(QString& command, QString& parameters) override;
+@@ -86,6 +86,7 @@ private:
+ 	bool outProcGuiHidden = false;
+     bool needsControlIdentitySave=false;
+ 	QElapsedTimer lastReadTimer;
++	unsigned transportMs = 10;
+ 	int vst3ClassIndex = 0;
+     std::wstring selectedClassUID;
+ 	QProcess* scanner=nullptr;
+diff --git a/Editor/guis/VSTPluginFilterGUIFactory.cpp b/Editor/guis/VSTPluginFilterGUIFactory.cpp
+index 9d7c61c..4529e9a 100644
+--- a/Editor/guis/VSTPluginFilterGUIFactory.cpp
++++ b/Editor/guis/VSTPluginFilterGUIFactory.cpp
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+     This file is part of Equalizer APO, a system-wide equalizer.
+     Copyright (C) 2017  Jonas Thedering
+ 
+@@ -28,6 +28,7 @@
+ #include <QDir>
+ #include <QFileInfo>
+ #include <algorithm>
++#include "outproc/TransportProfile.h"
+ 
+ using namespace std;
+ 
+@@ -65,6 +66,7 @@ IFilterGUI* VSTPluginFilterGUIFactory::createFilterGUI(QString& command, QString
+ 			QString hostId;
+ 			int vst3ClassIndex = 0;
+             std::wstring classUID;
++            unsigned transportMs = 10;
+ 			std::unordered_map<std::wstring, float> paramMap;
+ 			std::vector<std::wstring> parts = StringHelper::splitQuoted(parameters.toStdWString(), ' ');
+ 			for (unsigned i = 0; i + 1 < parts.size(); i += 2)
+@@ -77,6 +79,7 @@ IFilterGUI* VSTPluginFilterGUIFactory::createFilterGUI(QString& command, QString
+ 					chunkData = value;
+ 				else if (key == L"HostId")
+ 					hostId = QString::fromStdWString(value);
++                else if(key==L"TransportMs")transportMs=EqApoTransport::parse(value);
+                 else if(key==L"GuiUserSID") {} // User identity is refreshed when storing this interactive row.
+ 				else if(key==L"ClassUID") classUID=value;
+                 else if (key == L"ClassIndex")
+@@ -93,7 +96,7 @@ IFilterGUI* VSTPluginFilterGUIFactory::createFilterGUI(QString& command, QString
+ 			}
+ 			auto lib=VSTPluginLibrary::getInstance(libPath);
+             
+-            result = new VSTPluginFilterGUI(VSTPluginLibrary::getInstance(libPath), chunkData, paramMap, hostId, vst3ClassIndex,classUID);
++            result = new VSTPluginFilterGUI(VSTPluginLibrary::getInstance(libPath), chunkData, paramMap, hostId, vst3ClassIndex,classUID,transportMs);
+ 		}
+ 	}
+ 
+diff --git a/Editor/helpers/ConfigBackup.cpp b/Editor/helpers/ConfigBackup.cpp
+new file mode 100644
+index 0000000..f48d4fd
+--- /dev/null
++++ b/Editor/helpers/ConfigBackup.cpp
+@@ -0,0 +1,177 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "ConfigBackup.h"
++#include <QCryptographicHash>
++#include <QDateTime>
++#include <QDir>
++#include <QDirIterator>
++#include <QFile>
++#include <QFileInfo>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QRegularExpression>
++#include <QSaveFile>
++#include <QSet>
++#include <QTemporaryDir>
++#include <QtEndian>
++#include <algorithm>
++
++namespace {
++constexpr qint64 maxTotal=2LL*1024*1024*1024;
++constexpr qint64 maxFile=256LL*1024*1024;
++constexpr quint32 maxHeader=4*1024*1024;
++constexpr int maxEntries=10000;
++const QByteArray magic("DEISUBAK\x01",9);
++struct Entry {QString path; qint64 size; QByteArray hash;};
++bool fail(QString& error,const QString& text) {error=text;return false;}
++bool safePath(const QString& path) {
++    if(path.isEmpty() || path.size()>1024 || path.contains('\\') || path.startsWith('/'))return false;
++    static const QRegularExpression bad(QStringLiteral("[<>:\"|?*\\x00-\\x1f]"));
++    static const QRegularExpression reserved(QStringLiteral("^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\.|$)"),QRegularExpression::CaseInsensitiveOption);
++    for(const QString& part:path.split('/'))
++        if(part.isEmpty() || part=="." || part==".." || part.endsWith('.') || part.endsWith(' ') ||
++           part.contains(bad) || reserved.match(part).hasMatch())return false;
++    return true;
++}
++bool transfer(QIODevice& source,QIODevice* dest,qint64 size,QByteArray& hash) {
++    QCryptographicHash sha(QCryptographicHash::Sha256);
++    while(size>0) {
++        const QByteArray block=source.read((std::min)(size,qint64(65536)));
++        if(block.isEmpty())return false;
++        if(dest && dest->write(block)!=block.size())return false;
++        sha.addData(block);size-=block.size();
++    }
++    hash=sha.result().toHex();return true;
++}
++bool readIndex(QFile& file,QList<Entry>& entries,QString& error) {
++    if(file.read(magic.size())!=magic)return fail(error,"Not a DEISU backup (or unsupported version).");
++    const QByteArray length=file.read(4);
++    if(length.size()!=4)return fail(error,"Truncated backup.");
++    const quint32 count=qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(length.constData()));
++    if(!count || count>maxHeader)return fail(error,"Invalid backup header size.");
++    const QByteArray header=file.read(count);
++    if(header.size()!=count)return fail(error,"Truncated backup header.");
++    QJsonParseError parse;
++    const auto doc=QJsonDocument::fromJson(header,&parse);
++    if(parse.error!=QJsonParseError::NoError || !doc.isObject())return fail(error,"Invalid backup manifest.");
++    const auto object=doc.object();
++    if(object.value("format").toString()!="deisu-config-1" || !object.value("files").isArray())return fail(error,"Unsupported backup format.");
++    const auto files=object.value("files").toArray();
++    if(files.isEmpty() || files.size()>maxEntries)return fail(error,"Invalid file count.");
++    QSet<QString> paths; qint64 total=0;
++    for(const auto value:files) {
++        const auto item=value.toObject();
++        const QString path=item.value("path").toString();
++        const double number=item.value("size").toDouble(-1);
++        const auto hash=item.value("sha256").toString().toLatin1();
++        if(!safePath(path) || paths.contains(path.toCaseFolded()) || number<0 || number>maxFile ||
++           number!=qint64(number) || hash.size()!=64 || QByteArray::fromHex(hash).toHex()!=hash)
++            return fail(error,"Unsafe or invalid backup entry.");
++        paths.insert(path.toCaseFolded());total+=qint64(number);
++        if(total>maxTotal)return fail(error,"Backup exceeds the 2 GiB limit.");
++        entries.append({path,qint64(number),hash});
++    }
++    for(const auto& entry:entries) {
++        QString parent=entry.path;
++        while(parent.contains('/')) {
++            parent=parent.left(parent.lastIndexOf('/'));
++            if(paths.contains(parent.toCaseFolded()))return fail(error,"Conflicting backup paths.");
++        }
++    }
++    if(file.size()-file.pos()!=total)return fail(error,"Truncated backup or unexpected trailing data.");
++    return true;
++}
++}
++
++bool ConfigBackup::create(const QString& root,const QString& destination,
++                         const QMap<QString,QByteArray>& overrides,QString& error) {
++    const QDir dir(root);
++    if(!dir.exists())return fail(error,"Configuration folder does not exist.");
++    const QString canonical=QFileInfo(root).canonicalFilePath();
++    const QString dest=QFileInfo(destination).absoluteFilePath();
++    // Keep the archive outside the tree to avoid recursion and accidental overwrites.
++    const QString relativeDestination=dir.relativeFilePath(dest);
++    if(safePath(relativeDestination))return fail(error,"Choose a backup destination outside the configuration folder.");
++    QMap<QString,QString> sources;
++    QDirIterator it(canonical,QDir::Files|QDir::Dirs|QDir::NoDotAndDotDot|QDir::Hidden|QDir::System,QDirIterator::Subdirectories);
++    while(it.hasNext()) {
++        it.next();const auto info=it.fileInfo();
++        if(info.isSymLink())return fail(error,"Symbolic links are not supported: "+info.filePath());
++        if(info.isDir())continue;
++        if(!info.isFile())return fail(error,"Non-regular file: "+info.filePath());
++        const QString relative=QDir(canonical).relativeFilePath(info.filePath());
++        if(relative.endsWith(".eqbackup",Qt::CaseInsensitive))continue;
++        if(!safePath(relative))return fail(error,"Unsupported file name: "+relative);
++        sources.insert(relative,info.filePath());
++        if(sources.size()>maxEntries)return fail(error,"Too many files.");
++    }
++    for(auto item=overrides.cbegin();item!=overrides.cend();++item) {
++        if(!safePath(item.key()))return fail(error,"An open configuration is outside the configuration folder.");
++        sources.insert(item.key(),QString());
++    }
++    if(sources.isEmpty() || sources.size()>maxEntries)return fail(error,"Empty or oversized configuration tree.");
++    QList<Entry> entries;QJsonArray manifest;QSet<QString> names;qint64 total=0;
++    for(auto item=sources.cbegin();item!=sources.cend();++item) {
++        if(names.contains(item.key().toCaseFolded()))return fail(error,"Case-colliding file names.");
++        names.insert(item.key().toCaseFolded());
++        QByteArray hash;qint64 size=0;
++        if(overrides.contains(item.key())) {
++            const auto bytes=overrides.value(item.key());size=bytes.size();
++            hash=QCryptographicHash::hash(bytes,QCryptographicHash::Sha256).toHex();
++        } else {
++            QFile input(item.value());
++            if(!input.open(QIODevice::ReadOnly))return fail(error,input.errorString());
++            size=input.size();
++            if(size>maxFile)return fail(error,"File exceeds 256 MiB: "+item.key());
++            if(!transfer(input,nullptr,size,hash))return fail(error,"Cannot read: "+item.key());
++        }
++        total+=size;
++        if(size>maxFile || total>maxTotal)return fail(error,"Backup exceeds size limits.");
++        entries.append({item.key(),size,hash});
++        manifest.append(QJsonObject{{"path",item.key()},{"size",double(size)},{"sha256",QString::fromLatin1(hash)}});
++    }
++    const auto header=QJsonDocument(QJsonObject{{"format","deisu-config-1"},
++        {"createdUtc",QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
++        {"scope","config-tree; external files, binaries and licenses excluded"},{"files",manifest}}).toJson(QJsonDocument::Compact);
++    if(header.size()>maxHeader)return fail(error,"Backup index is too large.");
++    QSaveFile output(destination); // Atomic commit, no fallback that could destroy an existing archive.
++    if(!output.open(QIODevice::WriteOnly))return fail(error,output.errorString());
++    uchar length[4];qToBigEndian<quint32>(quint32(header.size()),length);
++    if(output.write(magic)!=magic.size() || output.write(reinterpret_cast<char*>(length),4)!=4 || output.write(header)!=header.size())
++        return fail(error,"Cannot write backup header.");
++    for(const auto& entry:entries) {
++        if(overrides.contains(entry.path)) {
++            const auto bytes=overrides.value(entry.path);
++            if(output.write(bytes)!=bytes.size())return fail(error,output.errorString());
++        } else {
++            QFile input(sources.value(entry.path));QByteArray hash;
++            if(!input.open(QIODevice::ReadOnly) || input.size()!=entry.size || !transfer(input,&output,entry.size,hash) || hash!=entry.hash)
++                return fail(error,"File changed or could not be copied: "+entry.path);
++        }
++    }
++    if(!output.commit())return fail(error,output.errorString());
++    return true;
++}
++
++bool ConfigBackup::restore(const QString& archive,const QString& destination,QString& error) {
++    QFile file(archive);
++    if(!file.open(QIODevice::ReadOnly))return fail(error,file.errorString());
++    QList<Entry> entries;
++    if(!readIndex(file,entries,error))return false;
++    const QFileInfo target(destination);
++    if(target.exists() || target.isSymLink())return fail(error,"Restore destination must be a new folder.");
++    const QString parent=target.dir().canonicalPath();
++    if(parent.isEmpty())return fail(error,"Restore parent folder does not exist.");
++    QTemporaryDir stage(parent+"/.deisu-restore-XXXXXX");
++    if(!stage.isValid())return fail(error,"Cannot create staging folder.");
++    for(const auto& entry:entries) {
++        const QString path=stage.path()+"/"+entry.path;
++        if(!QDir().mkpath(QFileInfo(path).absolutePath()))return fail(error,"Cannot create restored subfolder.");
++        QFile output(path);QByteArray hash;
++        if(!output.open(QIODevice::WriteOnly|QIODevice::NewOnly) || !transfer(file,&output,entry.size,hash) || !output.flush() || hash!=entry.hash)
++            return fail(error,"Corrupt backup or write failure: "+entry.path);
++    }
++    if(!QDir().rename(stage.path(),target.absoluteFilePath()))return fail(error,"Cannot publish restored folder (destination may already exist).");
++    stage.setAutoRemove(false);
++    return true;
++}
+diff --git a/Editor/helpers/ConfigBackup.h b/Editor/helpers/ConfigBackup.h
+new file mode 100644
+index 0000000..9b3d18e
+--- /dev/null
++++ b/Editor/helpers/ConfigBackup.h
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <QByteArray>
++#include <QString>
++#include <QMap>
++
++namespace ConfigBackup {
++// Snapshots include the config tree and saved plug-in states within its files.
++// External plug-in binaries, activations and files outside the tree are excluded.
++bool create(const QString& root, const QString& destination,
++            const QMap<QString,QByteArray>& overrides, QString& error);
++// Destination must not exist; publication is one directory rename after validation.
++bool restore(const QString& archive, const QString& destination, QString& error);
++}
+diff --git a/Editor/helpers/StudioStyle.h b/Editor/helpers/StudioStyle.h
+new file mode 100644
+index 0000000..eb32773
+--- /dev/null
++++ b/Editor/helpers/StudioStyle.h
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <QString>
++inline QString deisuStudioStyle() {
++    return QStringLiteral(R"QSS(
++QMainWindow, QDialog, QDockWidget, QScrollArea, FilterTable { background: #11151e; color: #e9edf5; }
++QLabel, QCheckBox, QGroupBox { color: #e9edf5; }
++QMenuBar, QMenu, QToolBar { background: #191f2b; color: #e9edf5; border: none; spacing: 6px; }
++QMenu::item:selected, QMenuBar::item:selected { background: #394963; }
++QToolButton, QPushButton { background: #263247; color: #edf3ff; border: 1px solid #3b4b66; border-radius: 6px; padding: 7px 10px; }
++QToolButton:hover, QPushButton:hover { background: #354a69; border-color: #67a6ff; }
++QPushButton:pressed { background: #1d2e49; }
++QPushButton:disabled, QToolButton:disabled { color: #808b9e; background: #202631; }
++QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QPlainTextEdit { background: #202836; color: #edf3ff; selection-background-color: #3865a0; border: 1px solid #43516a; border-radius: 4px; padding: 5px; }
++QComboBox QAbstractItemView { background: #202836; color: #edf3ff; selection-background-color: #3865a0; }
++QTabWidget::pane { border: 1px solid #2d394f; }
++QTabBar::tab { background: #1e2736; color: #9fafc8; padding: 10px 16px; border-bottom: 2px solid transparent; }
++QTabBar::tab:selected { background: #28354b; color: #ffffff; border-bottom: 2px solid #64a4ff; }
++QDockWidget::title { background: #1c2637; color: #9dbcea; padding: 8px; }
++QWidget#studioSidebar { background: #191f2b; }
++QLabel#studioBrand { color: #ffffff; font-size: 22px; font-weight: bold; }
++QLabel#studioSubtitle { color: #9cabc3; }
++QPushButton#studioPrimary { background: #2863b7; border-color: #518de1; }
++QGroupBox { border: 1px solid #34425a; border-radius: 8px; margin-top: 12px; padding-top: 12px; }
++QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
++QScrollBar:vertical { background: #151c28; width: 12px; }
++QScrollBar::handle:vertical { background: #445674; border-radius: 5px; min-height: 24px; }
++QToolTip { background: #24334c; color: #ffffff; border: 1px solid #658ac0; }
++)QSS");
++}
+diff --git a/filters/OutProcVSTPluginFilter.cpp b/filters/OutProcVSTPluginFilter.cpp
+index ecc7b1b..01f129c 100644
+--- a/filters/OutProcVSTPluginFilter.cpp
++++ b/filters/OutProcVSTPluginFilter.cpp
+@@ -1,4 +1,4 @@
+-﻿/*
++/*
+     This file is part of Equalizer APO, a system-wide equalizer.
+     Copyright (C) 2017  Jonas Thedering
+ 
+@@ -11,6 +11,7 @@
+ #include "stdafx.h"
+ #include "outproc/InheritedProcess.h"
+ #include "outproc/VSTUserContext.h"
++#include "outproc/TransportProfile.h"
+ 
+ #include <algorithm>
+ #include <cmath>
+@@ -27,7 +28,7 @@ static void outProcVSTModuleAnchor()
+ {
+ }
+ 
+-OutProcVSTPluginFilter::OutProcVSTPluginFilter(wstring libPath, wstring chunkData, unordered_map<wstring, float> paramMap, wstring hostId, bool analysisMode, int vst3ClassIndex, std::wstring classUID,std::wstring guiUserSid,std::wstring brokerInstanceId)
++OutProcVSTPluginFilter::OutProcVSTPluginFilter(wstring libPath, wstring chunkData, unordered_map<wstring, float> paramMap, wstring hostId, bool analysisMode, int vst3ClassIndex, std::wstring classUID,std::wstring guiUserSid,std::wstring brokerInstanceId, unsigned transportMs)
+ 	: sampleRate(0.0f),
+ 	  hostId(hostId),
+       brokerInstanceId(std::move(brokerInstanceId)),
+@@ -52,6 +53,7 @@ OutProcVSTPluginFilter::OutProcVSTPluginFilter(wstring libPath, wstring chunkDat
+ 	  disabled(false),
+ 	  consecutiveTimeouts(0)
+ {
++    this->transportMs=EqApoTransport::normalize(transportMs);
+     this->guiUserSid=analysisMode?std::move(guiUserSid):resolveVSTUserSid(guiUserSid);
+ 	vstConfig.libraryPath = libPath;
+ 	vstConfig.vst3ClassIndex = vst3ClassIndex;
+@@ -94,11 +96,9 @@ vector<wstring> OutProcVSTPluginFilter::initialize(float sampleRate, unsigned ma
+ 	}
+ 
+     if(!analysisMode) {
+-        // The existing client accumulates callback fragments without waiting.
+-        // Keep IPC cadence independent of tiny APO callbacks; a 10 ms quantum
+-        // avoids thousands of kernel wakeups and sub-millisecond round trips.
+-        // This is explicit buffered transport latency, not a longer timeout.
+-        maxFrameCount=(std::max)(maxFrameCount,static_cast<unsigned>(std::ceil(double(sampleRate)/100.0)));
++        // Select a bounded IPC quantum off the real-time path. Never make it
++        // smaller than the engine's maximum callback; no waiting is introduced.
++        maxFrameCount=EqApoTransport::quantum(sampleRate,maxFrameCount,transportMs);
+         this->maxFrameCount=maxFrameCount;
+     }
+ 
+diff --git a/filters/OutProcVSTPluginFilter.h b/filters/OutProcVSTPluginFilter.h
+index 09f7729..eeb4c95 100644
+--- a/filters/OutProcVSTPluginFilter.h
++++ b/filters/OutProcVSTPluginFilter.h
+@@ -32,7 +32,7 @@
+ class OutProcVSTPluginFilter : public IFilter
+ {
+ public:
+-	OutProcVSTPluginFilter(std::wstring libPath, std::wstring chunkData, std::unordered_map<std::wstring, float> paramMap, std::wstring hostId = L"", bool analysisMode = false, int vst3ClassIndex = 0, std::wstring classUID = L"", std::wstring guiUserSid = L"", std::wstring brokerInstanceId = L"");
++	OutProcVSTPluginFilter(std::wstring libPath, std::wstring chunkData, std::unordered_map<std::wstring, float> paramMap, std::wstring hostId = L"", bool analysisMode = false, int vst3ClassIndex = 0, std::wstring classUID = L"", std::wstring guiUserSid = L"", std::wstring brokerInstanceId = L"", unsigned transportMs = 10);
+ 	~OutProcVSTPluginFilter() override;
+ 
+ 	bool getInPlace() override { return true; }
+@@ -105,6 +105,7 @@ private:
+ 	float sampleRate;
+ 	unsigned channelCount;
+ 	unsigned maxFrameCount;
++    unsigned transportMs = 10;
+ 	unsigned timeoutMs;
+ 	std::uint64_t requestSeq;
+ 	std::size_t sharedByteCount;
+diff --git a/filters/OutProcVSTPluginFilterFactory.cpp b/filters/OutProcVSTPluginFilterFactory.cpp
+index d34a980..7107bfa 100644
+--- a/filters/OutProcVSTPluginFilterFactory.cpp
++++ b/filters/OutProcVSTPluginFilterFactory.cpp
+@@ -17,6 +17,7 @@
+ #include "FilterEngine.h"
+ #include "OutProcVSTPluginFilter.h"
+ #include "OutProcVSTPluginFilterFactory.h"
++#include "outproc/TransportProfile.h"
+ 
+ using namespace std;
+ 
+@@ -35,6 +36,7 @@ vector<IFilter*> OutProcVSTPluginFilterFactory::createFilter(const wstring& conf
+ 		wstring chunkData;
+ 		wstring hostId;
+         wstring guiUserSid;
++        unsigned transportMs = 10;
+ 		int vst3ClassIndex = 0;
+         wstring classUID;
+ 		unordered_map<wstring, float> paramMap;
+@@ -65,6 +67,7 @@ vector<IFilter*> OutProcVSTPluginFilterFactory::createFilter(const wstring& conf
+ 				chunkData = value;
+ 			else if (key == L"HostId")
+ 				hostId = value;
++            else if(key==L"TransportMs")transportMs=EqApoTransport::parse(value);
+             else if(key==L"GuiUserSID")guiUserSid=value;
+ 			else if(key==L"ClassUID") classUID=value;
+             else if (key == L"ClassIndex")
+@@ -101,8 +104,8 @@ vector<IFilter*> OutProcVSTPluginFilterFactory::createFilter(const wstring& conf
+             // only plugin identity, user and processing layout govern reuse.
+             const auto identitySignature=std::to_wstring(libPath.size())+L":"+libPath
+                 +L":"+std::to_wstring(vst3ClassIndex)+L":"+std::to_wstring(classUID.size())+L":"+classUID
+-                +L":"+std::to_wstring(guiUserSid.size())+L":"+guiUserSid;
+-			filter = new(mem) OutProcVSTPluginFilter(libPath, chunkData, paramMap, hostId, engine != nullptr && engine->isAnalysisMode(), vst3ClassIndex, classUID,guiUserSid,engine?engine->getBrokerInstanceId(hostId,identitySignature):L"");
++                +L":"+std::to_wstring(guiUserSid.size())+L":"+guiUserSid+L":transport:"+std::to_wstring(transportMs);
++			filter = new(mem) OutProcVSTPluginFilter(libPath, chunkData, paramMap, hostId, engine != nullptr && engine->isAnalysisMode(), vst3ClassIndex, classUID,guiUserSid,engine?engine->getBrokerInstanceId(hostId,identitySignature):L"",transportMs);
+ 		}
+ 	}
+ 
+diff --git a/outproc/TransportProfile.h b/outproc/TransportProfile.h
+new file mode 100644
+index 0000000..97cae54
+--- /dev/null
++++ b/outproc/TransportProfile.h
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++#include <algorithm>
++#include <cmath>
++#include <string>
++
++namespace EqApoTransport {
++// Milliseconds per quantum; asynchronous transport uses two quanta.
++inline unsigned normalize(unsigned ms) noexcept {
++    return ms == 2 || ms == 5 || ms == 10 || ms == 20 ? ms : 10;
++}
++inline unsigned parse(const std::wstring& value) noexcept {
++    if (value == L"2") return 2;
++    if (value == L"5") return 5;
++    if (value == L"20") return 20;
++    return 10;
++}
++inline unsigned quantum(double rate, unsigned callbackFrames, unsigned ms) noexcept {
++    if (!std::isfinite(rate) || rate <= 0 || rate > 768000) return callbackFrames;
++    return (std::max)(callbackFrames, static_cast<unsigned>(std::ceil(rate * normalize(ms) / 1000.0)));
++}
++}
