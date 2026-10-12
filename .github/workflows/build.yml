@@ -1,0 +1,55 @@
+name: Build DEISU Windows EXE
+on: [push, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: changes
+      - uses: actions/checkout@v4
+        with:
+          repository: Mixomo/EqAPO64_with_VST3_support
+          ref: b9cf3f39d070aaa5db515b37c1771c61a77c168c
+          path: source
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Apply changes
+        working-directory: source
+        shell: powershell
+        run: |
+          git apply --check ../changes/deisu.patch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git apply ../changes/deisu.patch
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build installer
+        working-directory: source
+        shell: powershell
+        run: ./build.ps1 -VisualStudioEdition Enterprise
+      - name: Test backup and audio
+        working-directory: source
+        shell: powershell
+        run: |
+          cmake -S Deisu/tests -B _build/deisu-tests -A x64 -DCMAKE_PREFIX_PATH="$pwd/third_party/Qt/6.10.1/msvc2022_64"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cmake --build _build/deisu-tests --config Release
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:PATH="$pwd/third_party/Qt/6.10.1/msvc2022_64/bin;"+$env:PATH
+          ctest --test-dir _build/deisu-tests -C Release --output-on-failure
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DEISU-Audio-Windows-x64
+          path: source/output/installer/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-logs
+          path: |
+            source/output/build/**
+            source/_build/deisu-tests/Testing/**
